@@ -1,0 +1,11 @@
+*~
+venv*/
+*.lock
+dist/
+*.egg-info/
+*.so
+target/
+.*.swp
+.DS_Store
+pkg/
+node_modules/
