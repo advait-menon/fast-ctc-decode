@@ -200,6 +200,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     gap_prob: (label_prob + gap_prob) * pr[0], // (cum prob of paths with leading blank + without) * probability of blank at this step
                 });
             }
+            // note we dont add anything to the suffix tree for the blank case
             
             // for all other labels,probs except the blank
             for (label, &pr_b) in pr.iter().skip(1).enumerate() {
@@ -207,7 +208,9 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 if pr_b < beam_cut_threshold {
                     continue;
                 }
-
+                
+                // if collapse repeats (true for CTC and the current label we consider is same as the tip label)
+                // then add the next search point (gap prob is 0 because no leading blank, multiply label prob by next label prob)
                 if collapse_repeats && Some(label) == tip_label {
                     next_beam.push(SearchPoint {
                         node: node,
@@ -215,6 +218,10 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         gap_prob: 0.0,
                         state: state,
                     });
+
+                    // new node is child of current node or if it doesnt exist 
+                    // otherwise if no child and its possible for path to have a blank
+                    // add a node as child of current node and make that new node idx
                     let new_node_idx = suffix_tree.get_child(node, label).or_else(|| {
                         if gap_prob > 0.0 {
                             Some(suffix_tree.add_node(node, label, idx))
@@ -222,7 +229,9 @@ pub fn beam_search<D: Data<Elem = f32>>(
                             None
                         }
                     });
-
+                    
+                    // if new_node_idx is not None then set idx to new node idx
+                    // next search point is the new node, and we update label_prob, 
                     if let Some(idx) = new_node_idx {
                         next_beam.push(SearchPoint {
                             node: idx,
@@ -232,10 +241,12 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         });
                     }
                 } else {
+                    // if not collapsing repeats we get the child of the node or if it doesnt exist we add that node
                     let new_node_idx = suffix_tree
                         .get_child(node, label)
                         .unwrap_or_else(|| suffix_tree.add_node(node, label, idx));
-
+                    
+                    // next beam is here
                     next_beam.push(SearchPoint {
                         node: new_node_idx,
                         state: state,
@@ -245,14 +256,22 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 }
             }
         }
+        // beam, next_beam = next_beam, beam. Note that we clear next_beam each loop so it doesnt matter if we swap the,
         std::mem::swap(&mut beam, &mut next_beam);
 
+        // del marker is smallest i32, sort the search points in beam (which is the search points for next iteration by the index of the node)
         const DELETE_MARKER: i32 = i32::min_value();
         beam.sort_by_key(|x| x.node);
+        // set a last key and last_key_pos to keep track of last seen key and its position
         let mut last_key = DELETE_MARKER;
         let mut last_key_pos = 0;
+
+        // iterate through all search points in beam
         for i in 0..beam.len() {
             let beam_item = beam[i];
+
+            //i.e. if two consecutive items have the same node index, merge their probabilities
+            // otherwise set the last key to that search point
             if beam_item.node == last_key {
                 beam[last_key_pos].label_prob += beam_item.label_prob;
                 beam[last_key_pos].gap_prob += beam_item.gap_prob;
@@ -263,7 +282,12 @@ pub fn beam_search<D: Data<Elem = f32>>(
             }
         }
 
+        // filter out all "duplicate" nodes (see above for loop) that we merged
         beam.retain(|x| x.node != DELETE_MARKER);
+
+        // sorts search points in descending order of probabilities and if any are NaN set has_nans to true
+        // partial cmp between b and a is descending, unstable sort means in place, if we have nans we set them to equal
+        // as we dont care about them
         let mut has_nans = false;
         beam.sort_unstable_by(|a, b| {
             (b.probability())
@@ -273,15 +297,23 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     std::cmp::Ordering::Equal // don't really care
                 })
         });
+
+        // if we have nans raise error
         if has_nans {
             return Err(SearchError::IncomparableValues);
         }
+
+        // keep the top beam_size probabilities (beam width)
         beam.truncate(beam_size);
+
+        // if beam empty then threshold too high
         if beam.is_empty() {
             // we've run out of beam (probably the threshold is too high)
             return Err(SearchError::RanOutOfBeam);
         }
+        // highest probability is top
         let top = beam[0].probability();
+        // normalise probabilities by highest one for numerical stability
         for x in &mut beam {
             x.label_prob /= top;
             x.gap_prob /= top;
@@ -291,6 +323,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
     let mut path = Vec::new();
     let mut sequence = String::new();
 
+    // if the first node in beam is not root then its valid path with highest prob
+    // iterate from that backwards and add time to path and label to sequence
     if beam[0].node != ROOT_NODE {
         for (label, &time) in suffix_tree.iter_from(beam[0].node) {
             path.push(time);
@@ -298,6 +332,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
         }
     }
 
+    // reverse the path and sequence, return them
     path.reverse();
     Ok((sequence.chars().rev().collect::<String>(), path))
 }
