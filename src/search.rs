@@ -222,6 +222,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     // new node is child of current node or if it doesnt exist 
                     // otherwise if no child and its possible for path to have a blank
                     // add a node as child of current node and make that new node idx
+                    // we do this so that we can have repeats e.g. ANA -> AA. since we merge the first AN -> A
+                    // for repeats we need it to have a new node idx
                     let new_node_idx = suffix_tree.get_child(node, label).or_else(|| {
                         if gap_prob > 0.0 {
                             Some(suffix_tree.add_node(node, label, idx))
@@ -231,7 +233,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     });
                     
                     // if new_node_idx is not None then set idx to new node idx
-                    // next search point is the new node, and we update label_prob, 
+                    // next search point is the new node, and we update label_prob,
                     if let Some(idx) = new_node_idx {
                         next_beam.push(SearchPoint {
                             node: idx,
@@ -241,7 +243,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         });
                     }
                 } else {
-                    // if not collapsing repeats we get the child of the node or if it doesnt exist we add that node
+                    // if not collapsing repeats or if parent is root
+                    // we get the child of the node or if it doesnt exist we add that node
                     let new_node_idx = suffix_tree
                         .get_child(node, label)
                         .unwrap_or_else(|| suffix_tree.add_node(node, label, idx));
@@ -272,6 +275,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
 
             //i.e. if two consecutive items have the same node index, merge their probabilities
             // otherwise set the last key to that search point
+            // this only happens for the N branch and the branch with the same label from a node
             if beam_item.node == last_key {
                 beam[last_key_pos].label_prob += beam_item.label_prob;
                 beam[last_key_pos].gap_prob += beam_item.gap_prob;
