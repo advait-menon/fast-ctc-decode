@@ -1,6 +1,6 @@
 use super::SearchError;
 use crate::tree::{SuffixTree, ROOT_NODE};
-use ndarray::{ArrayBase, Axis, Data, FoldWhile, Ix1, Ix2, Ix3, Zip};
+use ndarray::{Array1, ArrayBase, ArrayView1, Axis, Data, FoldWhile, Ix1, Ix2, Ix3, Zip};
 use ndarray_stats::QuantileExt;
 
 /// A node in the labelling tree to build from.
@@ -162,6 +162,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     beam_size: usize,
     beam_cut_threshold: f32,
     collapse_repeats: bool,
+    no_repeats: bool,
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
@@ -187,9 +188,9 @@ pub fn beam_search<D: Data<Elem = f32>>(
             state,
         } in &beam
         {
+
             // tip_label is the final label of the branch i.e. label of the last node which is the search point node
-            let tip_label = suffix_tree.label(node);
-            
+            let tip_label = suffix_tree.label(node);            
             // note that this is because the blank label is always the first
             // add N to beam if probability is above
             if pr[0] > beam_cut_threshold {
@@ -234,11 +235,13 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     
                     // if new_node_idx is not None then set idx to new node idx
                     // next search point is the new node, and we update label_prob,
-                    if let Some(idx) = new_node_idx {
+
+                    // if no_repeats == True then we don't want this search point
+                    if let Some(idx) = new_node_idx{
                         next_beam.push(SearchPoint {
                             node: idx,
                             state: state,
-                            label_prob: gap_prob * pr_b,
+                            label_prob: if no_repeats {0.0} else {gap_prob * pr_b},
                             gap_prob: 0.0,
                         });
                     }
@@ -634,10 +637,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true, false).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false, false).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
