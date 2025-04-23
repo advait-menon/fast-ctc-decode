@@ -182,6 +182,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
+    let time_steps = network_output.len_of(Axis(0));
 
     let mut suffix_tree = SuffixTree::new(alphabet_size);
     let mut beam = vec![SearchPoint {
@@ -362,17 +363,17 @@ pub fn beam_search<D: Data<Elem = f32>>(
         // as we dont care about them
         let mut has_nans = false;
     
-        if length > 0 {
+        if length >= 1 {
             beam.sort_unstable_by(|a, b| {
                 let prob_a = a.probability();
                 let prob_b = b.probability();
 
-                let dist_a = (a.length - length as i32).abs();
-                let dist_b = (b.length - length as i32).abs();
+                let dist_a = (a.length - length).abs();
+                let dist_b = (b.length - length).abs();
             
                 // Combine probability with length proximity
-                let score_a = prob_a + (1.0 - (1.0/(length as f32)) * dist_a as f32);
-                let score_b = prob_b + (1.0 - (1.0/(length as f32)) * dist_b as f32);
+                let score_a = prob_a * (1.0 - (1.0/(length as f32)) * dist_a as f32) * idx as f32 * (1.0/time_steps as f32);
+                let score_b = prob_b * (1.0 - (1.0/(length as f32)) * dist_b as f32) * idx as f32 * (1.0/time_steps as f32);
             
                 score_b.partial_cmp(&score_a).unwrap_or_else(|| {
                     has_nans = true;
