@@ -156,6 +156,14 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
     Ok((sequence.chars().rev().collect::<String>(), path))
 }
 
+pub fn shannon_entropy(probs: ArrayView1<f32>) -> f32 {
+    probs
+        .iter()
+        .filter(|&&p| p > 0.0)
+        .map(|&p| -p * p.ln())
+        .sum()
+}
+
 pub fn beam_search<D: Data<Elem = f32>>(
     network_output: &ArrayBase<D, Ix2>,
     alphabet: &[String],
@@ -163,6 +171,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     beam_cut_threshold: f32,
     collapse_repeats: bool,
     no_repeats: bool,
+    entropy_threshold: f32,
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
@@ -180,6 +189,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     for (idx, pr) in network_output.outer_iter().enumerate() {
         next_beam.clear(); //empty the list of next search points
 
+        let entropy = shannon_entropy(pr);
         // for each searchpoint in the current beam
         for &SearchPoint {
             node,
@@ -187,7 +197,46 @@ pub fn beam_search<D: Data<Elem = f32>>(
             gap_prob,
             state,
         } in &beam
-        {
+        {   
+            let mut underrepresented = Vec::new();
+            let mut a_count = 0;
+            let mut c_count = 0;
+            let mut g_count = 0;
+            let mut t_count = 0;
+            // if entropy is > threshold then let us count the number of total A/C/G/T
+            if entropy_threshold >= 0.0 && entropy > entropy_threshold {
+                // iterate through the sequence and count how many bases
+                if node != ROOT_NODE {
+                    for (label, _) in suffix_tree.iter_from(node) {
+                        let base = &alphabet[label + 1].to_string();
+                    
+                        match base.as_str() {
+                            "A" => a_count += 1,
+                            "C" => c_count += 1,
+                            "G" => g_count += 1,
+                            "T" => t_count += 1,
+                            _ => (), // ignore blanks or unexpected chars
+                        }
+                    }
+                }
+
+                // find proportion of each base
+                let total = a_count + c_count + g_count + t_count;
+                if total > 0 {
+                    if (a_count as f32 / total as f32) < 0.25 {
+                        underrepresented.push(1); // A
+                    }
+                    if (c_count as f32 / total as f32) < 0.25 {
+                        underrepresented.push(2); // C
+                    }
+                    if (g_count as f32 / total as f32) < 0.25 {
+                        underrepresented.push(3); // G
+                    }
+                    if (t_count as f32 / total as f32) < 0.25 {
+                        underrepresented.push(4); // T
+                    }
+                }
+            }
 
             // tip_label is the final label of the branch i.e. label of the last node which is the search point node
             let tip_label = suffix_tree.label(node);            
@@ -207,6 +256,10 @@ pub fn beam_search<D: Data<Elem = f32>>(
             for (label, &pr_b) in pr.iter().skip(1).enumerate() {
                 // if probability is less than threshold then ignore
                 if pr_b < beam_cut_threshold {
+                    continue;
+                }
+
+                if entropy_threshold >= 0.0 && !underrepresented.contains(&label) && !underrepresented.is_empty() {
                     continue;
                 }
                 
@@ -296,6 +349,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
         // partial cmp between b and a is descending, unstable sort means in place, if we have nans we set them to equal
         // as we dont care about them
         let mut has_nans = false;
+
         beam.sort_unstable_by(|a, b| {
             (b.probability())
                 .partial_cmp(&(a.probability()))
@@ -637,10 +691,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true, false).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true, false, -1.0).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false, false).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false, false, -1.0).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
