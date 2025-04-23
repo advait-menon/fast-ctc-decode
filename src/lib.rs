@@ -68,6 +68,7 @@ pub fn js_beam_search(
     collapse_repeats: bool,
     no_repeats:bool,
     entropy_threshold: f32,
+    length: i32,
     shape: &JsValue,
 ) -> Result<JsValue, JsValue> {
     let shape: Vec<usize> = shape.into_serde().unwrap();
@@ -97,6 +98,7 @@ pub fn js_beam_search(
             collapse_repeats,
             no_repeats,
             entropy_threshold,
+            length,
         )
         .unwrap();
 
@@ -320,9 +322,9 @@ fn crf_beam_search(
 /// Raises:
 ///     PyValueError: The constraints on the arguments have not been met.
 #[cfg(feature = "python")]
-#[pyfunction(beam_size = "5", beam_cut_threshold = "0.0", collapse_repeats = true, no_repeats = false, entropy_threshold = "-1.0",)]
+#[pyfunction(beam_size = "5", beam_cut_threshold = "0.0", collapse_repeats = true, no_repeats = false, entropy_threshold = "-1.0", length = "-1")]
 #[pyo3(
-    text_signature = "(network_output, alphabet, beam_size=5, beam_cut_threshold=0.0, collapse_repeats=True, no_repeats=False, entropy_threshold=-1.0)"
+    text_signature = "(network_output, alphabet, beam_size=5, beam_cut_threshold=0.0, collapse_repeats=True, no_repeats=False, entropy_threshold=-1.0, length=-1)"
 )]
 fn beam_search(
     py: Python,
@@ -333,6 +335,7 @@ fn beam_search(
     collapse_repeats: bool,
     no_repeats: bool,
     entropy_threshold: f32,
+    length: i32,
 ) -> PyResult<(String, Vec<usize>)> {
     let alphabet = seq_to_vec(alphabet)?;
     let max_beam_cut = 1.0 / (alphabet.len() as f32);
@@ -365,6 +368,7 @@ fn beam_search(
                     collapse_repeats,
                     no_repeats,
                     entropy_threshold,
+                    length,
                 )
             })
         }

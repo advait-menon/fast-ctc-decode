@@ -16,6 +16,8 @@ struct SearchPoint {
     /// The cumulative probability of the labelling so far for paths with one or more leading
     /// blank labels.
     gap_prob: f32,
+
+    length: i32, // Length of search point
 }
 
 impl SearchPoint {
@@ -56,6 +58,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
         label_prob: *init_state.max().unwrap(),
         gap_prob: init_state[0],
         state: init_state.argmax().unwrap(),
+        length: 0
     }];
     let mut next_beam = Vec::new();
 
@@ -67,6 +70,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
             state,
             label_prob,
             gap_prob,
+            length
         } in &beam
         {
             let pr = probs.slice(s![state, ..]);
@@ -78,6 +82,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     state: state,
                     label_prob: 0.0,
                     gap_prob: (label_prob + gap_prob) * pr[0],
+                    length: length
                 });
             }
 
@@ -95,6 +100,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     gap_prob: 0.0,
                     label_prob: (label_prob + gap_prob) * pr_b,
                     state: (state * n_base) % n_state + (label),
+                    length: length + 1
                 });
             }
         }
@@ -172,6 +178,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     collapse_repeats: bool,
     no_repeats: bool,
     entropy_threshold: f32,
+    length: i32,
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
@@ -182,13 +189,13 @@ pub fn beam_search<D: Data<Elem = f32>>(
         state: 0, // crf transition state
         gap_prob: 1.0, // cum prob of labelling so far for paths with one or more leading blank labels
         label_prob: 0.0, // cum prob of labelling so far for paths without leading blank label
+        length: 0,
     }]; //vector of search points for current beam (initialised with starting search point)
     let mut next_beam = Vec::new(); // vector of search points for next beam
 
     // pr is the probabilities at time given by idx
     for (idx, pr) in network_output.outer_iter().enumerate() {
         next_beam.clear(); //empty the list of next search points
-
         let entropy = shannon_entropy(pr);
         // for each searchpoint in the current beam
         for &SearchPoint {
@@ -196,6 +203,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
             label_prob,
             gap_prob,
             state,
+            length
         } in &beam
         {   
             let mut underrepresented = Vec::new();
@@ -248,6 +256,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     state: state, // same state transistion
                     label_prob: 0.0, // label prob is 0 because we do have a leading blank
                     gap_prob: (label_prob + gap_prob) * pr[0], // (cum prob of paths with leading blank + without) * probability of blank at this step
+                    length: length
                 });
             }
             // note we dont add anything to the suffix tree for the blank case
@@ -271,6 +280,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         label_prob: label_prob * pr_b,
                         gap_prob: 0.0,
                         state: state,
+                        length: length
                     });
 
                     // new node is child of current node or if it doesnt exist 
@@ -296,6 +306,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                             state: state,
                             label_prob: if no_repeats {0.0} else {gap_prob * pr_b},
                             gap_prob: 0.0,
+                            length: length+1
                         });
                     }
                 } else {
@@ -311,6 +322,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         state: state,
                         label_prob: (label_prob + gap_prob) * pr_b,
                         gap_prob: 0.0,
+                        length: length+1
                     });
                 }
             }
@@ -349,15 +361,34 @@ pub fn beam_search<D: Data<Elem = f32>>(
         // partial cmp between b and a is descending, unstable sort means in place, if we have nans we set them to equal
         // as we dont care about them
         let mut has_nans = false;
+    
+        if length > 0 {
+            beam.sort_unstable_by(|a, b| {
+                let prob_a = a.probability();
+                let prob_b = b.probability();
 
-        beam.sort_unstable_by(|a, b| {
-            (b.probability())
-                .partial_cmp(&(a.probability()))
-                .unwrap_or_else(|| {
+                let dist_a = (a.length - length as i32).abs();
+                let dist_b = (b.length - length as i32).abs();
+            
+                // Combine probability with length proximity
+                let score_a = prob_a + (1.0 - (1.0/(length as f32)) * dist_a as f32);
+                let score_b = prob_b + (1.0 - (1.0/(length as f32)) * dist_b as f32);
+            
+                score_b.partial_cmp(&score_a).unwrap_or_else(|| {
                     has_nans = true;
-                    std::cmp::Ordering::Equal // don't really care
+                    std::cmp::Ordering::Equal
                 })
-        });
+            });
+        } else {
+            beam.sort_unstable_by(|a, b| {
+                (b.probability())
+                    .partial_cmp(&(a.probability()))
+                    .unwrap_or_else(|| {
+                        has_nans = true;
+                        std::cmp::Ordering::Equal // don't really care
+                    })
+            });
+        }
 
         // if we have nans raise error
         if has_nans {
@@ -691,10 +722,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true, false, -1.0).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true, false, -1.0,-1).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false, false, -1.0).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false, false, -1.0,-1).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
