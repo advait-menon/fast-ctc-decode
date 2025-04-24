@@ -1,3 +1,5 @@
+use std::time;
+
 use super::SearchError;
 use crate::tree::{SuffixTree, ROOT_NODE};
 use ndarray::{Array1, ArrayBase, ArrayView1, Axis, Data, FoldWhile, Ix1, Ix2, Ix3, Zip};
@@ -18,6 +20,8 @@ struct SearchPoint {
     gap_prob: f32,
 
     length: i32, // Length of search point
+
+    counts: [usize; 4],
 }
 
 impl SearchPoint {
@@ -58,7 +62,8 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
         label_prob: *init_state.max().unwrap(),
         gap_prob: init_state[0],
         state: init_state.argmax().unwrap(),
-        length: 0
+        length: 0,
+        counts: [0; 4]
     }];
     let mut next_beam = Vec::new();
 
@@ -70,7 +75,8 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
             state,
             label_prob,
             gap_prob,
-            length
+            length,
+            counts
         } in &beam
         {
             let pr = probs.slice(s![state, ..]);
@@ -82,7 +88,8 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     state: state,
                     label_prob: 0.0,
                     gap_prob: (label_prob + gap_prob) * pr[0],
-                    length: length
+                    length: length,
+                    counts: counts
                 });
             }
 
@@ -95,12 +102,15 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     .get_child(node, label)
                     .unwrap_or_else(|| suffix_tree.add_node(node, label, idx));
 
+                let mut new_counts = counts;
+                new_counts[label] += 1;
                 next_beam.push(SearchPoint {
                     node: new_node_idx,
                     gap_prob: 0.0,
                     label_prob: (label_prob + gap_prob) * pr_b,
                     state: (state * n_base) % n_state + (label),
-                    length: length + 1
+                    length: length + 1,
+                    counts: new_counts
                 });
             }
         }
@@ -170,6 +180,21 @@ pub fn shannon_entropy(probs: ArrayView1<f32>) -> f32 {
         .sum()
 }
 
+fn kl_divergence(counts: &[usize]) -> f32 {
+    // assumes TOTAL count is > 0
+    let total: usize = counts.iter().sum();
+    let uniform = 0.25;
+    let mut kl = 0.0;
+
+    for &count in counts {
+        if count > 0 {
+            let p = count as f32 / total as f32;
+            kl += p * (p / uniform).ln();
+        }
+    }
+    kl
+}
+
 pub fn beam_search<D: Data<Elem = f32>>(
     network_output: &ArrayBase<D, Ix2>,
     alphabet: &[String],
@@ -183,6 +208,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
     let time_steps = network_output.len_of(Axis(0));
+    // let expected_bases_per_signal = length as f32/time_steps as f32;
 
     let mut suffix_tree = SuffixTree::new(alphabet_size);
     let mut beam = vec![SearchPoint {
@@ -191,61 +217,58 @@ pub fn beam_search<D: Data<Elem = f32>>(
         gap_prob: 1.0, // cum prob of labelling so far for paths with one or more leading blank labels
         label_prob: 0.0, // cum prob of labelling so far for paths without leading blank label
         length: 0,
+        counts: [0;4]
     }]; //vector of search points for current beam (initialised with starting search point)
     let mut next_beam = Vec::new(); // vector of search points for next beam
 
     // pr is the probabilities at time given by idx
     for (idx, pr) in network_output.outer_iter().enumerate() {
         next_beam.clear(); //empty the list of next search points
-        let entropy = shannon_entropy(pr);
+        // let entropy = shannon_entropy(pr);
         // for each searchpoint in the current beam
         for &SearchPoint {
             node,
             label_prob,
             gap_prob,
             state,
-            length
+            length,
+            counts
         } in &beam
         {   
-            let mut underrepresented = Vec::new();
-            let mut a_count = 0;
-            let mut c_count = 0;
-            let mut g_count = 0;
-            let mut t_count = 0;
+            // let mut underrepresented = Vec::new();
             // if entropy is > threshold then let us count the number of total A/C/G/T
-            if entropy_threshold >= 0.0 && entropy > entropy_threshold {
-                // iterate through the sequence and count how many bases
-                if node != ROOT_NODE {
-                    for (label, _) in suffix_tree.iter_from(node) {
-                        let base = &alphabet[label + 1].to_string();
-                    
-                        match base.as_str() {
-                            "A" => a_count += 1,
-                            "C" => c_count += 1,
-                            "G" => g_count += 1,
-                            "T" => t_count += 1,
-                            _ => (), // ignore blanks or unexpected chars
-                        }
-                    }
-                }
 
-                // find proportion of each base
-                let total = a_count + c_count + g_count + t_count;
-                if total > 0 {
-                    if (a_count as f32 / total as f32) < 0.25 {
-                        underrepresented.push(1); // A
-                    }
-                    if (c_count as f32 / total as f32) < 0.25 {
-                        underrepresented.push(2); // C
-                    }
-                    if (g_count as f32 / total as f32) < 0.25 {
-                        underrepresented.push(3); // G
-                    }
-                    if (t_count as f32 / total as f32) < 0.25 {
-                        underrepresented.push(4); // T
-                    }
-                }
-            }
+            // if entropy_threshold >= 0.0 && entropy > entropy_threshold && length > 0 {
+            //     // find proportion of each base
+            //     if total > 0 {
+            //         if (a_count as f32 / total as f32) < 0.25 {
+            //             underrepresented.push(1); // A
+            //         }
+            //         if (c_count as f32 / total as f32) < 0.25 {
+            //             underrepresented.push(2); // C
+            //         }
+            //         if (g_count as f32 / total as f32) < 0.25 {
+            //             underrepresented.push(3); // G
+            //         }
+            //         if (t_count as f32 / total as f32) < 0.25 {
+            //             underrepresented.push(4); // T
+            //         }
+            //     }
+            // }
+
+            // now find KL and if its too big only look at underrepresented bases :D
+            // if length > 0 {
+            //     let kl = kl_divergence(&counts);
+            //     if kl > 0.0009 {
+            //         for (i, &count) in counts.iter().enumerate() {
+            //             let freq = count as f64 / length as f64;
+            //             if freq < 0.25 {
+            //                 underrepresented.push(i);
+            //             }
+            //         }
+            //     }
+    
+            // }
 
             // tip_label is the final label of the branch i.e. label of the last node which is the search point node
             let tip_label = suffix_tree.label(node);            
@@ -257,7 +280,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     state: state, // same state transistion
                     label_prob: 0.0, // label prob is 0 because we do have a leading blank
                     gap_prob: (label_prob + gap_prob) * pr[0], // (cum prob of paths with leading blank + without) * probability of blank at this step
-                    length: length
+                    length: length,
+                    counts: counts
                 });
             }
             // note we dont add anything to the suffix tree for the blank case
@@ -269,9 +293,13 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     continue;
                 }
 
-                if entropy_threshold >= 0.0 && !underrepresented.contains(&label) && !underrepresented.is_empty() {
-                    continue;
-                }
+                // if entropy > 1.0 && !underrepresented.contains(&label) && !underrepresented.is_empty() {
+                //     continue;
+                // }
+
+                // if entropy_threshold >= 0.0 && !underrepresented.contains(&label) && !underrepresented.is_empty() {
+                //     continue;
+                // }
                 
                 // if collapse repeats (true for CTC and the current label we consider is same as the tip label)
                 // then add the next search point (gap prob is 0 because no leading blank, multiply label prob by next label prob)
@@ -281,7 +309,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         label_prob: label_prob * pr_b,
                         gap_prob: 0.0,
                         state: state,
-                        length: length
+                        length: length,
+                        counts: counts
                     });
 
                     // new node is child of current node or if it doesnt exist 
@@ -301,13 +330,16 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     // next search point is the new node, and we update label_prob,
 
                     // if no_repeats == True then we don't want this search point
+                    let mut new_counts = counts;
+                    new_counts[label] += 1;
                     if let Some(idx) = new_node_idx{
                         next_beam.push(SearchPoint {
                             node: idx,
                             state: state,
                             label_prob: if no_repeats {0.0} else {gap_prob * pr_b},
                             gap_prob: 0.0,
-                            length: length+1
+                            length: length+1,
+                            counts: new_counts
                         });
                     }
                 } else {
@@ -316,14 +348,16 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     let new_node_idx = suffix_tree
                         .get_child(node, label)
                         .unwrap_or_else(|| suffix_tree.add_node(node, label, idx));
-                    
+                    let mut new_counts = counts;
+                    new_counts[label] += 1;
                     // next beam is here
                     next_beam.push(SearchPoint {
                         node: new_node_idx,
                         state: state,
                         label_prob: (label_prob + gap_prob) * pr_b,
                         gap_prob: 0.0,
-                        length: length+1
+                        length: length+1,
+                        counts: new_counts
                     });
                 }
             }
@@ -368,12 +402,29 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 let prob_a = a.probability();
                 let prob_b = b.probability();
 
-                let dist_a = (a.length - length).abs();
-                let dist_b = (b.length - length).abs();
-            
+                // let dist_a = (a.length - length).abs();
+                // let dist_b = (b.length - length).abs();
+                
+                let bases_per_signal_a = a.length as f32/(idx+1) as f32;
+                let bases_per_signal_b = b.length as f32/(idx+1) as f32;
+
+                let mut score_a= prob_a;
+                let mut score_b= prob_b;
+
                 // Combine probability with length proximity
-                let score_a = prob_a * (1.0 - (1.0/(length as f32)) * dist_a as f32) * idx as f32 * (1.0/time_steps as f32);
-                let score_b = prob_b * (1.0 - (1.0/(length as f32)) * dist_b as f32) * idx as f32 * (1.0/time_steps as f32);
+                // score_a = prob_a * (1.0 - (1.0/(length as f32)) * dist_a as f32) * idx as f32 * (1.0/time_steps as f32);
+                // score_b = prob_b * (1.0 - (1.0/(length as f32)) * dist_b as f32) * idx as f32 * (1.0/time_steps as f32);
+
+
+                // if (idx+1) as f32 > (1.0/expected_bases_per_signal) {
+                //     if (bases_per_signal_a - expected_bases_per_signal).abs() > 0.1 {
+                //         score_a = 0.0;
+                //     }
+
+                //     if (bases_per_signal_b - expected_bases_per_signal).abs() > 0.1 {
+                //         score_b = 0.0;
+                //     }
+                // }
             
                 score_b.partial_cmp(&score_a).unwrap_or_else(|| {
                     has_nans = true;
