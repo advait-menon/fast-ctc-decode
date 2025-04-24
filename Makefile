@@ -8,6 +8,9 @@ build:
 develop:
 	maturin develop -F python --release
 
+debug:
+	maturin develop -F python
+
 test:
 	cargo test --features python
 	python3 tests/test_decode.py
