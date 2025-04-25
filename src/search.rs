@@ -5,6 +5,8 @@ use crate::tree::{SuffixTree, ROOT_NODE};
 use ndarray::{Array1, ArrayBase, ArrayView1, Axis, Data, FoldWhile, Ix1, Ix2, Ix3, Zip};
 use ndarray_stats::QuantileExt;
 
+const EPSILON: f32 = 1e-6;
+
 /// A node in the labelling tree to build from.
 #[derive(Clone, Copy, Debug)]
 struct SearchPoint {
@@ -185,14 +187,20 @@ fn kl_divergence(counts: &[usize]) -> f32 {
     let total: usize = counts.iter().sum();
     let uniform = 0.25;
     let mut kl = 0.0;
+    let mut have_updated = false;
 
     for &count in counts {
         if count > 0 {
+            have_updated = true;
             let p = count as f32 / total as f32;
             kl += p * (p / uniform).ln();
         }
     }
-    kl
+    if !have_updated {
+        return f32::MAX; // return max if we havent updated
+    } else {
+        return kl
+    }
 }
 
 pub fn beam_search<D: Data<Elem = f32>>(
@@ -208,7 +216,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
     let time_steps = network_output.len_of(Axis(0));
-    // let expected_bases_per_signal = length as f32/time_steps as f32;
+    let expected_bases_per_signal = length as f32/time_steps as f32;
 
     let mut suffix_tree = SuffixTree::new(alphabet_size);
     let mut beam = vec![SearchPoint {
@@ -224,7 +232,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     // pr is the probabilities at time given by idx
     for (idx, pr) in network_output.outer_iter().enumerate() {
         next_beam.clear(); //empty the list of next search points
-        // let entropy = shannon_entropy(pr);
+        let entropy = shannon_entropy(pr);
         // for each searchpoint in the current beam
         for &SearchPoint {
             node,
@@ -235,7 +243,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
             counts
         } in &beam
         {   
-            // let mut underrepresented = Vec::new();
+            let mut underrepresented = Vec::new();
             // if entropy is > threshold then let us count the number of total A/C/G/T
 
             // if entropy_threshold >= 0.0 && entropy > entropy_threshold && length > 0 {
@@ -257,18 +265,17 @@ pub fn beam_search<D: Data<Elem = f32>>(
             // }
 
             // now find KL and if its too big only look at underrepresented bases :D
-            // if length > 0 {
-            //     let kl = kl_divergence(&counts);
-            //     if kl > 0.0009 {
-            //         for (i, &count) in counts.iter().enumerate() {
-            //             let freq = count as f64 / length as f64;
-            //             if freq < 0.25 {
-            //                 underrepresented.push(i);
-            //             }
-            //         }
-            //     }
-    
-            // }
+            if length > 0 {
+                let kl = kl_divergence(&counts);
+                if kl > 0.005 && entropy > 1.15 {
+                    for (i, &count) in counts.iter().enumerate() {
+                        let freq = count as f64 / length as f64;
+                        if freq < 0.25 {
+                            underrepresented.push(i);
+                        }
+                    }
+                }
+            }
 
             // tip_label is the final label of the branch i.e. label of the last node which is the search point node
             let tip_label = suffix_tree.label(node);            
@@ -297,9 +304,9 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 //     continue;
                 // }
 
-                // if entropy_threshold >= 0.0 && !underrepresented.contains(&label) && !underrepresented.is_empty() {
-                //     continue;
-                // }
+                if !underrepresented.contains(&label) && !underrepresented.is_empty() {
+                    continue;
+                }
                 
                 // if collapse repeats (true for CTC and the current label we consider is same as the tip label)
                 // then add the next search point (gap prob is 0 because no leading blank, multiply label prob by next label prob)
@@ -402,14 +409,40 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 let prob_a = a.probability();
                 let prob_b = b.probability();
 
-                // let dist_a = (a.length - length).abs();
-                // let dist_b = (b.length - length).abs();
-                
-                let bases_per_signal_a = a.length as f32/(idx+1) as f32;
-                let bases_per_signal_b = b.length as f32/(idx+1) as f32;
+                // handle cases where either search point is impossible
+                let mut a_zero: bool = false;
+                let mut b_zero: bool = false;
 
-                let mut score_a= prob_a;
-                let mut score_b= prob_b;
+                if prob_a < EPSILON{
+                    a_zero = true;
+                }
+                if prob_b < EPSILON {
+                    b_zero = true;
+                }
+                
+                if a_zero && b_zero {
+                    return std::cmp::Ordering::Equal
+                } else if b_zero {
+                    return std::cmp::Ordering::Less
+                } else if a_zero {
+                    return std::cmp::Ordering::Greater
+                }
+
+
+                // let dist_a = (a.length as f32 - length as f32).abs();
+                // let dist_b = (b.length as f32 - length as f32).abs();
+            
+
+                // let bases_per_signal_a = a.length as f32/(idx+1) as f32;
+                // let bases_per_signal_b = b.length as f32/(idx+1) as f32;
+
+                // let length_inverse = 1.0/(length as f32);
+
+                // let a_kl = kl_divergence(&a.counts);
+                // let b_kl = kl_divergence(&b.counts);
+
+                let score_a = prob_a;
+                let score_b = prob_b;
 
                 // Combine probability with length proximity
                 // score_a = prob_a * (1.0 - (1.0/(length as f32)) * dist_a as f32) * idx as f32 * (1.0/time_steps as f32);
