@@ -20,6 +20,8 @@ struct SearchPoint {
     /// The cumulative probability of the labelling so far for paths with one or more leading
     /// blank labels.
     gap_prob: f32,
+    // keep track of how long the current homopolymer is
+    homopolymer_length: i32,
 
     length: i32, // Length of search point
 
@@ -63,6 +65,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
         node: ROOT_NODE,
         label_prob: *init_state.max().unwrap(),
         gap_prob: init_state[0],
+        homopolymer_length: 0,
         state: init_state.argmax().unwrap(),
         length: 0,
         counts: [0; 4]
@@ -77,6 +80,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
             state,
             label_prob,
             gap_prob,
+            homopolymer_length,
             length,
             counts
         } in &beam
@@ -90,6 +94,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     state: state,
                     label_prob: 0.0,
                     gap_prob: (label_prob + gap_prob) * pr[0],
+                    homopolymer_length: homopolymer_length,
                     length: length,
                     counts: counts
                 });
@@ -110,6 +115,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     node: new_node_idx,
                     gap_prob: 0.0,
                     label_prob: (label_prob + gap_prob) * pr_b,
+                    homopolymer_length: 1,
                     state: (state * n_base) % n_state + (label),
                     length: length + 1,
                     counts: new_counts
@@ -209,14 +215,15 @@ pub fn beam_search<D: Data<Elem = f32>>(
     beam_size: usize,
     beam_cut_threshold: f32,
     collapse_repeats: bool,
-    no_repeats: bool,
-    entropy_threshold: f32,
-    length: i32,
+    homopolymer_penalty: i32, // if homopolymer length exceeds this then
+    no_repeats: i32 // if homopolymer length exceeds this then ignore it
+    // entropy_threshold: f32,
+    // length: i32,
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
     let time_steps = network_output.len_of(Axis(0));
-    let expected_bases_per_signal = length as f32/time_steps as f32;
+    // let expected_bases_per_signal = length as f32/time_steps as f32;
 
     let mut suffix_tree = SuffixTree::new(alphabet_size);
     let mut beam = vec![SearchPoint {
@@ -224,6 +231,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
         state: 0, // crf transition state
         gap_prob: 1.0, // cum prob of labelling so far for paths with one or more leading blank labels
         label_prob: 0.0, // cum prob of labelling so far for paths without leading blank label
+        homopolymer_length: 0,
         length: 0,
         counts: [0;4]
     }]; //vector of search points for current beam (initialised with starting search point)
@@ -238,6 +246,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
             node,
             label_prob,
             gap_prob,
+            homopolymer_length,
             state,
             length,
             counts
@@ -287,6 +296,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     state: state, // same state transistion
                     label_prob: 0.0, // label prob is 0 because we do have a leading blank
                     gap_prob: (label_prob + gap_prob) * pr[0], // (cum prob of paths with leading blank + without) * probability of blank at this step
+                    homopolymer_length: homopolymer_length,
                     length: length,
                     counts: counts
                 });
@@ -315,6 +325,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         node: node,
                         label_prob: label_prob * pr_b,
                         gap_prob: 0.0,
+                        homopolymer_length: homopolymer_length,
                         state: state,
                         length: length,
                         counts: counts
@@ -343,7 +354,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         next_beam.push(SearchPoint {
                             node: idx,
                             state: state,
-                            label_prob: if no_repeats {0.0} else {gap_prob * pr_b},
+                            label_prob: if homopolymer_length + 1 > no_repeats && no_repeats >= 0 {0.0} else {gap_prob * pr_b},
+                            homopolymer_length: homopolymer_length + 1,
                             gap_prob: 0.0,
                             length: length+1,
                             counts: new_counts
@@ -363,6 +375,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         state: state,
                         label_prob: (label_prob + gap_prob) * pr_b,
                         gap_prob: 0.0,
+                        homopolymer_length: 1,
                         length: length+1,
                         counts: new_counts
                     });
@@ -403,77 +416,112 @@ pub fn beam_search<D: Data<Elem = f32>>(
         // partial cmp between b and a is descending, unstable sort means in place, if we have nans we set them to equal
         // as we dont care about them
         let mut has_nans = false;
-    
-        if length >= 1 {
-            beam.sort_unstable_by(|a, b| {
-                let prob_a = a.probability();
-                let prob_b = b.probability();
 
-                // handle cases where either search point is impossible
-                let mut a_zero: bool = false;
-                let mut b_zero: bool = false;
+        beam.sort_unstable_by(|a, b| {
+            let prob_a = a.probability();
+            let prob_b = b.probability();
 
-                if prob_a < EPSILON{
-                    a_zero = true;
-                }
-                if prob_b < EPSILON {
-                    b_zero = true;
-                }
+            // handle cases where either search point is impossible
+            let mut a_zero: bool = false;
+            let mut b_zero: bool = false;
+
+            if prob_a < EPSILON{
+                a_zero = true;
+            }
+            if prob_b < EPSILON {
+                b_zero = true;
+            }
+            
+            if a_zero && b_zero {
+                return std::cmp::Ordering::Equal
+            } else if b_zero {
+                return std::cmp::Ordering::Less
+            } else if a_zero {
+                return std::cmp::Ordering::Greater
+            }
+            
+            let a_homopolymer_penalty = if homopolymer_penalty >=0 && a.homopolymer_length > homopolymer_penalty {0.2} else {0.0};
+            let b_homopolymer_penalty = if homopolymer_penalty >=0 && b.homopolymer_length > homopolymer_penalty {0.2} else {0.0};
+
+            let score_a = prob_a + a_homopolymer_penalty;
+            let score_b = prob_b + b_homopolymer_penalty;
+        
+            score_b.partial_cmp(&score_a).unwrap_or_else(|| {
+                has_nans = true;
+                std::cmp::Ordering::Equal
+            })
+        });
+
+        // if length >= 1 {
+        //     beam.sort_unstable_by(|a, b| {
+        //         let prob_a = a.probability();
+        //         let prob_b = b.probability();
+
+        //         // handle cases where either search point is impossible
+        //         let mut a_zero: bool = false;
+        //         let mut b_zero: bool = false;
+
+        //         if prob_a < EPSILON{
+        //             a_zero = true;
+        //         }
+        //         if prob_b < EPSILON {
+        //             b_zero = true;
+        //         }
                 
-                if a_zero && b_zero {
-                    return std::cmp::Ordering::Equal
-                } else if b_zero {
-                    return std::cmp::Ordering::Less
-                } else if a_zero {
-                    return std::cmp::Ordering::Greater
-                }
+        //         if a_zero && b_zero {
+        //             return std::cmp::Ordering::Equal
+        //         } else if b_zero {
+        //             return std::cmp::Ordering::Less
+        //         } else if a_zero {
+        //             return std::cmp::Ordering::Greater
+        //         }
 
 
-                // let dist_a = (a.length as f32 - length as f32).abs();
-                // let dist_b = (b.length as f32 - length as f32).abs();
+        //         // let dist_a = (a.length as f32 - length as f32).abs();
+        //         // let dist_b = (b.length as f32 - length as f32).abs();
             
 
-                // let bases_per_signal_a = a.length as f32/(idx+1) as f32;
-                // let bases_per_signal_b = b.length as f32/(idx+1) as f32;
+        //         // let bases_per_signal_a = a.length as f32/(idx+1) as f32;
+        //         // let bases_per_signal_b = b.length as f32/(idx+1) as f32;
 
-                // let length_inverse = 1.0/(length as f32);
+        //         // let length_inverse = 1.0/(length as f32);
 
-                // let a_kl = kl_divergence(&a.counts);
-                // let b_kl = kl_divergence(&b.counts);
+        //         // let a_kl = kl_divergence(&a.counts);
+        //         // let b_kl = kl_divergence(&b.counts);
 
-                let score_a = prob_a;
-                let score_b = prob_b;
+        //         let score_a = prob_a;
+        //         let score_b = prob_b;
 
-                // Combine probability with length proximity
-                // score_a = prob_a * (1.0 - (1.0/(length as f32)) * dist_a as f32) * idx as f32 * (1.0/time_steps as f32);
-                // score_b = prob_b * (1.0 - (1.0/(length as f32)) * dist_b as f32) * idx as f32 * (1.0/time_steps as f32);
+        //         // Combine probability with length proximity
+        //         // score_a = prob_a * (1.0 - (1.0/(length as f32)) * dist_a as f32) * idx as f32 * (1.0/time_steps as f32);
+        //         // score_b = prob_b * (1.0 - (1.0/(length as f32)) * dist_b as f32) * idx as f32 * (1.0/time_steps as f32);
 
 
-                // if (idx+1) as f32 > (1.0/expected_bases_per_signal) {
-                //     if (bases_per_signal_a - expected_bases_per_signal).abs() > 0.1 {
-                //         score_a = 0.0;
-                //     }
+        //         // if (idx+1) as f32 > (1.0/expected_bases_per_signal) {
+        //         //     if (bases_per_signal_a - expected_bases_per_signal).abs() > 0.1 {
+        //         //         score_a = 0.0;
+        //         //     }
 
-                //     if (bases_per_signal_b - expected_bases_per_signal).abs() > 0.1 {
-                //         score_b = 0.0;
-                //     }
-                // }
+        //         //     if (bases_per_signal_b - expected_bases_per_signal).abs() > 0.1 {
+        //         //         score_b = 0.0;
+        //         //     }
+        //         // }
             
-                score_b.partial_cmp(&score_a).unwrap_or_else(|| {
-                    has_nans = true;
-                    std::cmp::Ordering::Equal
-                })
-            });
-        } else {
-            beam.sort_unstable_by(|a, b| {
-                (b.probability())
-                    .partial_cmp(&(a.probability()))
-                    .unwrap_or_else(|| {
-                        has_nans = true;
-                        std::cmp::Ordering::Equal // don't really care
-                    })
-            });
-        }
+        //         score_b.partial_cmp(&score_a).unwrap_or_else(|| {
+        //             has_nans = true;
+        //             std::cmp::Ordering::Equal
+        //         })
+        //     });
+        // } else {
+        //     beam.sort_unstable_by(|a, b| {
+        //         (b.probability())
+        //             .partial_cmp(&(a.probability()))
+        //             .unwrap_or_else(|| {
+        //                 has_nans = true;
+        //                 std::cmp::Ordering::Equal // don't really care
+        //             })
+        //     });
+        // }
 
         // if we have nans raise error
         if has_nans {
@@ -807,10 +855,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true, false, -1.0,-1).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1,-1).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false, false, -1.0,-1).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1, -1).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
