@@ -237,17 +237,17 @@ pub fn beam_search<D: Data<Elem = f32>>(
         state: 0, // crf transition state
         gap_prob: 1.0, // cum prob of labelling so far for paths with one or more leading blank labels
         label_prob: 0.0, // cum prob of labelling so far for paths without leading blank label
-        homopolymer_length: 0,
-        exceeded_homopolymer_length: false,
-        length: 0,
-        counts: [0;4]
+        homopolymer_length: 0, // keep track of the length of the current homopolymer
+        exceeded_homopolymer_length: false, // keep track if we have exceeded homopolymer penalty
+        length: 0, // lenght of current beam is 0
+        counts: [0;4] // initialise counts of each base to 0
     }]; //vector of search points for current beam (initialised with starting search point)
     let mut next_beam = Vec::new(); // vector of search points for next beam
 
     // pr is the probabilities at time given by idx
     for (idx, pr) in network_output.outer_iter().enumerate() {
         next_beam.clear(); //empty the list of next search points
-        let entropy = shannon_entropy(pr);
+        // let entropy = shannon_entropy(pr);
         // for each searchpoint in the current beam
         for &SearchPoint {
             node,
@@ -366,7 +366,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                             state: state,
                             label_prob: if homopolymer_length + 1 > no_repeats && no_repeats >= 0 {0.0} else {gap_prob * pr_b},
                             homopolymer_length: homopolymer_length + 1,
-                            exceeded_homopolymer_length: homopolymer_length + 1 > homopolymer_penalty,
+                            exceeded_homopolymer_length: (homopolymer_length + 1 > homopolymer_penalty) || exceeded_homopolymer_length,
                             gap_prob: 0.0,
                             length: length+1,
                             counts: new_counts
@@ -387,7 +387,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         label_prob: (label_prob + gap_prob) * pr_b,
                         gap_prob: 0.0,
                         homopolymer_length: 1,
-                        exceeded_homopolymer_length: 1 > homopolymer_penalty,
+                        exceeded_homopolymer_length: (1 > homopolymer_penalty) || exceeded_homopolymer_length,
                         length: length+1,
                         counts: new_counts
                     });
