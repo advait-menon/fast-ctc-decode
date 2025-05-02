@@ -22,6 +22,8 @@ struct SearchPoint {
     gap_prob: f32,
     // keep track of how long the current homopolymer is
     homopolymer_length: i32,
+    // keep track if the path exceeds the homopolymer length penalty constraint
+    exceeded_homopolymer_length: bool,
 
     length: i32, // Length of search point
 
@@ -66,6 +68,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
         label_prob: *init_state.max().unwrap(),
         gap_prob: init_state[0],
         homopolymer_length: 0,
+        exceeded_homopolymer_length: false,
         state: init_state.argmax().unwrap(),
         length: 0,
         counts: [0; 4]
@@ -81,6 +84,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
             label_prob,
             gap_prob,
             homopolymer_length,
+            exceeded_homopolymer_length,
             length,
             counts
         } in &beam
@@ -95,6 +99,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     label_prob: 0.0,
                     gap_prob: (label_prob + gap_prob) * pr[0],
                     homopolymer_length: homopolymer_length,
+                    exceeded_homopolymer_length: exceeded_homopolymer_length,
                     length: length,
                     counts: counts
                 });
@@ -116,6 +121,7 @@ pub fn crf_beam_search<D: Data<Elem = f32>>(
                     gap_prob: 0.0,
                     label_prob: (label_prob + gap_prob) * pr_b,
                     homopolymer_length: 1,
+                    exceeded_homopolymer_length: exceeded_homopolymer_length,
                     state: (state * n_base) % n_state + (label),
                     length: length + 1,
                     counts: new_counts
@@ -232,6 +238,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
         gap_prob: 1.0, // cum prob of labelling so far for paths with one or more leading blank labels
         label_prob: 0.0, // cum prob of labelling so far for paths without leading blank label
         homopolymer_length: 0,
+        exceeded_homopolymer_length: false,
         length: 0,
         counts: [0;4]
     }]; //vector of search points for current beam (initialised with starting search point)
@@ -247,6 +254,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
             label_prob,
             gap_prob,
             homopolymer_length,
+            exceeded_homopolymer_length,
             state,
             length,
             counts
@@ -274,17 +282,17 @@ pub fn beam_search<D: Data<Elem = f32>>(
             // }
 
             // now find KL and if its too big only look at underrepresented bases :D
-            if length > 0 {
-                let kl = kl_divergence(&counts);
-                if kl > 0.005 && entropy > 1.15 {
-                    for (i, &count) in counts.iter().enumerate() {
-                        let freq = count as f64 / length as f64;
-                        if freq < 0.25 {
-                            underrepresented.push(i);
-                        }
-                    }
-                }
-            }
+            // if length > 0 {
+            //     let kl = kl_divergence(&counts);
+            //     if kl > 0.005 && entropy > 1.15 {
+            //         for (i, &count) in counts.iter().enumerate() {
+            //             let freq = count as f64 / length as f64;
+            //             if freq < 0.25 {
+            //                 underrepresented.push(i);
+            //             }
+            //         }
+            //     }
+            // }
 
             // tip_label is the final label of the branch i.e. label of the last node which is the search point node
             let tip_label = suffix_tree.label(node);            
@@ -297,6 +305,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     label_prob: 0.0, // label prob is 0 because we do have a leading blank
                     gap_prob: (label_prob + gap_prob) * pr[0], // (cum prob of paths with leading blank + without) * probability of blank at this step
                     homopolymer_length: homopolymer_length,
+                    exceeded_homopolymer_length: exceeded_homopolymer_length,
                     length: length,
                     counts: counts
                 });
@@ -326,6 +335,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         label_prob: label_prob * pr_b,
                         gap_prob: 0.0,
                         homopolymer_length: homopolymer_length,
+                        exceeded_homopolymer_length: exceeded_homopolymer_length,
                         state: state,
                         length: length,
                         counts: counts
@@ -356,6 +366,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                             state: state,
                             label_prob: if homopolymer_length + 1 > no_repeats && no_repeats >= 0 {0.0} else {gap_prob * pr_b},
                             homopolymer_length: homopolymer_length + 1,
+                            exceeded_homopolymer_length: homopolymer_length + 1 > homopolymer_penalty,
                             gap_prob: 0.0,
                             length: length+1,
                             counts: new_counts
@@ -376,6 +387,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         label_prob: (label_prob + gap_prob) * pr_b,
                         gap_prob: 0.0,
                         homopolymer_length: 1,
+                        exceeded_homopolymer_length: 1 > homopolymer_penalty,
                         length: length+1,
                         counts: new_counts
                     });
@@ -440,11 +452,11 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 return std::cmp::Ordering::Greater
             }
             
-            let a_homopolymer_penalty = if homopolymer_penalty >=0 && a.homopolymer_length > homopolymer_penalty {0.2} else {0.0};
-            let b_homopolymer_penalty = if homopolymer_penalty >=0 && b.homopolymer_length > homopolymer_penalty {0.2} else {0.0};
+            let a_homopolymer_penalty = if homopolymer_penalty >=0 && a.exceeded_homopolymer_length {0.2} else {0.0};
+            let b_homopolymer_penalty = if homopolymer_penalty >=0 && b.exceeded_homopolymer_length {0.2} else {0.0};
 
-            let score_a = prob_a + a_homopolymer_penalty;
-            let score_b = prob_b + b_homopolymer_penalty;
+            let score_a = prob_a - a_homopolymer_penalty;
+            let score_b = prob_b - b_homopolymer_penalty;
         
             score_b.partial_cmp(&score_a).unwrap_or_else(|| {
                 has_nans = true;
