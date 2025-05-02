@@ -222,7 +222,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     beam_cut_threshold: f32,
     collapse_repeats: bool,
     homopolymer_penalty: i32, // if homopolymer length exceeds this then
-    no_repeats: i32 // if homopolymer length exceeds this then ignore it
+    max_repeats: i32 // if homopolymer length exceeds this then ignore it
     // entropy_threshold: f32,
     // length: i32,
 ) -> Result<(String, Vec<usize>), SearchError> {
@@ -357,14 +357,14 @@ pub fn beam_search<D: Data<Elem = f32>>(
                     // if new_node_idx is not None then set idx to new node idx
                     // next search point is the new node, and we update label_prob,
 
-                    // if no_repeats == True then we don't want this search point
+                    // if max_repeats == True then we don't want this search point
                     let mut new_counts = counts;
                     new_counts[label] += 1;
                     if let Some(idx) = new_node_idx{
                         next_beam.push(SearchPoint {
                             node: idx,
                             state: state,
-                            label_prob: if homopolymer_length + 1 > no_repeats && no_repeats >= 0 {0.0} else {gap_prob * pr_b},
+                            label_prob: if homopolymer_length + 1 > max_repeats && max_repeats >= 0 {0.0} else {gap_prob * pr_b},
                             homopolymer_length: homopolymer_length + 1,
                             exceeded_homopolymer_length: (homopolymer_length + 1 > homopolymer_penalty) || exceeded_homopolymer_length,
                             gap_prob: 0.0,
