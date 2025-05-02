@@ -66,7 +66,7 @@ pub fn js_beam_search(
     beam_size: usize,
     beam_cut_threshold: f32,
     collapse_repeats: bool,
-    homopolymer_penalty: i32,
+    homopolymer_penalty: f32,
     max_repeats: i32,
     // entropy_threshold: f32,
     // length: i32,
@@ -322,9 +322,9 @@ fn crf_beam_search(
 /// Raises:
 ///     PyValueError: The constraints on the arguments have not been met.
 #[cfg(feature = "python")]
-#[pyfunction(beam_size = "5", beam_cut_threshold = "0.0", collapse_repeats = true, homopolymer_penalty = "-1", max_repeats = "-1")]
+#[pyfunction(beam_size = "5", beam_cut_threshold = "0.0", collapse_repeats = true, homopolymer_penalty = "-1.0", max_repeats = "-1")]
 #[pyo3(
-    text_signature = "(network_output, alphabet, beam_size=5, beam_cut_threshold=0.0, collapse_repeats=True, homopolymer_penalty=-1, max_repeats=-1)"
+    text_signature = "(network_output, alphabet, beam_size=5, beam_cut_threshold=0.0, collapse_repeats=True, homopolymer_penalty=-1.0, max_repeats=-1)"
 )]
 fn beam_search(
     py: Python,
@@ -333,7 +333,7 @@ fn beam_search(
     beam_size: usize,
     beam_cut_threshold: f32,
     collapse_repeats: bool,
-    homopolymer_penalty: i32,
+    homopolymer_penalty: f32,
     max_repeats: i32,
     // entropy_threshold: f32,
     // length: i32,

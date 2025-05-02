@@ -221,7 +221,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     beam_size: usize,
     beam_cut_threshold: f32,
     collapse_repeats: bool,
-    homopolymer_penalty: i32, // if homopolymer length exceeds this then
+    homopolymer_penalty: f32, // homopolymer penalty
     max_repeats: i32 // if homopolymer length exceeds this then ignore it
     // entropy_threshold: f32,
     // length: i32,
@@ -364,9 +364,9 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         next_beam.push(SearchPoint {
                             node: idx,
                             state: state,
-                            label_prob: if homopolymer_length + 1 > max_repeats && max_repeats >= 0 {0.0} else {gap_prob * pr_b},
+                            label_prob: if homopolymer_length + 1 > max_repeats && max_repeats >= 0 && homopolymer_penalty < 0.0 {0.0} else {gap_prob * pr_b},
                             homopolymer_length: homopolymer_length + 1,
-                            exceeded_homopolymer_length: (homopolymer_length + 1 > homopolymer_penalty) || exceeded_homopolymer_length,
+                            exceeded_homopolymer_length: (homopolymer_length + 1 > max_repeats) || exceeded_homopolymer_length,
                             gap_prob: 0.0,
                             length: length+1,
                             counts: new_counts
@@ -387,7 +387,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
                         label_prob: (label_prob + gap_prob) * pr_b,
                         gap_prob: 0.0,
                         homopolymer_length: 1,
-                        exceeded_homopolymer_length: (1 > homopolymer_penalty) || exceeded_homopolymer_length,
+                        exceeded_homopolymer_length: (1 > max_repeats) || exceeded_homopolymer_length,
                         length: length+1,
                         counts: new_counts
                     });
@@ -452,8 +452,8 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 return std::cmp::Ordering::Greater
             }
             
-            let a_homopolymer_penalty = if homopolymer_penalty >=0 && a.exceeded_homopolymer_length {0.2} else {0.0};
-            let b_homopolymer_penalty = if homopolymer_penalty >=0 && b.exceeded_homopolymer_length {0.2} else {0.0};
+            let a_homopolymer_penalty = if max_repeats >=0 && a.exceeded_homopolymer_length && homopolymer_penalty >= 0.0 {homopolymer_penalty} else {0.0};
+            let b_homopolymer_penalty = if max_repeats >=0 && b.exceeded_homopolymer_length && homopolymer_penalty >= 0.0 {homopolymer_penalty} else {0.0};
 
             let score_a = prob_a - a_homopolymer_penalty;
             let score_b = prob_b - b_homopolymer_penalty;
@@ -867,10 +867,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1,-1).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1.0,-1).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1, -1).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1.0, -1).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
