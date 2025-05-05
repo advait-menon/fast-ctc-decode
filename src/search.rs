@@ -209,7 +209,7 @@ fn kl_divergence(counts: &[usize]) -> f32 {
         }
     }
     if !have_updated {
-        return f32::MAX; // return max if we havent updated
+        return (1.0/uniform).ln(); // return max KL if we havent updated
     } else {
         return kl
     }
@@ -222,14 +222,19 @@ pub fn beam_search<D: Data<Elem = f32>>(
     beam_cut_threshold: f32,
     collapse_repeats: bool,
     homopolymer_penalty: f32, // homopolymer penalty
-    max_repeats: i32 // if homopolymer length exceeds this then ignore it
+    max_repeats: i32, // if homopolymer length exceeds this then ignore it
+    length: i32, // desired length of output
+    length_lambda: f32, // scale factor for absolute length penalty
+    scale_by_timestep: bool, // whether to scale absolute length penalty by timestep
+    discard_by_expected_length: f32, // discard any beams that differ from the expected length by this much
+    kl_lambda: f32, // turn on kl score penalty and specifies the scaling coeff
+    discard_by_kl: f32, // discard if kl exceeds this and entropy exceeds a value
     // entropy_threshold: f32,
-    // length: i32,
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
     let time_steps = network_output.len_of(Axis(0));
-    // let expected_bases_per_signal = length as f32/time_steps as f32;
+    let expected_bases_per_step = length as f32/time_steps as f32;
 
     let mut suffix_tree = SuffixTree::new(alphabet_size);
     let mut beam = vec![SearchPoint {
@@ -247,7 +252,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     // pr is the probabilities at time given by idx
     for (idx, pr) in network_output.outer_iter().enumerate() {
         next_beam.clear(); //empty the list of next search points
-        // let entropy = shannon_entropy(pr);
+        let entropy = shannon_entropy(pr);
         // for each searchpoint in the current beam
         for &SearchPoint {
             node,
@@ -261,38 +266,19 @@ pub fn beam_search<D: Data<Elem = f32>>(
         } in &beam
         {   
             let mut underrepresented = Vec::new();
-            // if entropy is > threshold then let us count the number of total A/C/G/T
-
-            // if entropy_threshold >= 0.0 && entropy > entropy_threshold && length > 0 {
-            //     // find proportion of each base
-            //     if total > 0 {
-            //         if (a_count as f32 / total as f32) < 0.25 {
-            //             underrepresented.push(1); // A
-            //         }
-            //         if (c_count as f32 / total as f32) < 0.25 {
-            //             underrepresented.push(2); // C
-            //         }
-            //         if (g_count as f32 / total as f32) < 0.25 {
-            //             underrepresented.push(3); // G
-            //         }
-            //         if (t_count as f32 / total as f32) < 0.25 {
-            //             underrepresented.push(4); // T
-            //         }
-            //     }
-            // }
 
             // now find KL and if its too big only look at underrepresented bases :D
-            // if length > 0 {
-            //     let kl = kl_divergence(&counts);
-            //     if kl > 0.005 && entropy > 1.15 {
-            //         for (i, &count) in counts.iter().enumerate() {
-            //             let freq = count as f64 / length as f64;
-            //             if freq < 0.25 {
-            //                 underrepresented.push(i);
-            //             }
-            //         }
-            //     }
-            // }
+            if discard_by_kl > 0.0 {
+                let kl = kl_divergence(&counts);
+                if kl > discard_by_kl && entropy > 0.8*(4.0_f32).ln() {
+                    for (i, &count) in counts.iter().enumerate() {
+                        let freq = count as f64 / length as f64;
+                        if freq < 0.25 {
+                            underrepresented.push(i);
+                        }
+                    }
+                }
+            }
 
             // tip_label is the final label of the branch i.e. label of the last node which is the search point node
             let tip_label = suffix_tree.label(node);            
@@ -318,10 +304,6 @@ pub fn beam_search<D: Data<Elem = f32>>(
                 if pr_b < beam_cut_threshold {
                     continue;
                 }
-
-                // if entropy > 1.0 && !underrepresented.contains(&label) && !underrepresented.is_empty() {
-                //     continue;
-                // }
 
                 if !underrepresented.contains(&label) && !underrepresented.is_empty() {
                     continue;
@@ -443,6 +425,19 @@ pub fn beam_search<D: Data<Elem = f32>>(
             if prob_b < EPSILON {
                 b_zero = true;
             }
+
+            let a_bases_per_step = a.length as f32/(idx+1) as f32;
+            let b_bases_per_step = b.length as f32/(idx+1) as f32;
+
+            if (discard_by_expected_length >= 0.0) && (length > 0) && ((idx + 1) as f32 > 1.0/expected_bases_per_step) {
+                if (a_bases_per_step - expected_bases_per_step).abs() > discard_by_expected_length {
+                    a_zero = true;
+                }
+                if (b_bases_per_step - expected_bases_per_step).abs() > discard_by_expected_length {
+                    b_zero = true;
+                }
+            }
+
             
             if a_zero && b_zero {
                 return std::cmp::Ordering::Equal
@@ -455,8 +450,21 @@ pub fn beam_search<D: Data<Elem = f32>>(
             let a_homopolymer_penalty = if max_repeats >=0 && a.exceeded_homopolymer_length && homopolymer_penalty >= 0.0 {homopolymer_penalty} else {0.0};
             let b_homopolymer_penalty = if max_repeats >=0 && b.exceeded_homopolymer_length && homopolymer_penalty >= 0.0 {homopolymer_penalty} else {0.0};
 
-            let score_a = prob_a - a_homopolymer_penalty;
-            let score_b = prob_b - b_homopolymer_penalty;
+            let a_abs_len_penalty = if length > 0 {(1.0/length as f32)*(length as f32 - a.length as f32).abs()} else {0.0};
+            let b_abs_len_penalty = if length > 0 {(1.0/length as f32)*(length as f32 - b.length as f32).abs()} else {0.0};
+            
+            let a_kl = {kl_divergence(&a.counts)};
+            let b_kl = {kl_divergence(&b.counts)};
+
+            let mut timestep_scale = 1.0;
+
+            if scale_by_timestep {
+                timestep_scale = (idx + 1) as f32/time_steps as f32
+            }
+
+            let score_a = prob_a - a_homopolymer_penalty - length_lambda*a_abs_len_penalty*timestep_scale - kl_lambda*a_kl*timestep_scale;
+            let score_b = prob_b - b_homopolymer_penalty - length_lambda*b_abs_len_penalty*timestep_scale - kl_lambda*b_kl*timestep_scale;
+
         
             score_b.partial_cmp(&score_a).unwrap_or_else(|| {
                 has_nans = true;
@@ -867,10 +875,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1.0,-1).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1.0,-1,0,1.0,false,-1.0,0.0,-1.0).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1.0, -1).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1.0, -1,0,1.0,false,-1.0,0.0,-1.0).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
