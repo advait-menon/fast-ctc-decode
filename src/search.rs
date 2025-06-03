@@ -229,7 +229,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
     discard_by_expected_length: f32, // discard any beams that differ from the expected length by this much
     kl_lambda: f32, // turn on kl score penalty and specifies the scaling coeff
     discard_by_kl: f32, // discard if kl exceeds this and entropy exceeds a value
-    // entropy_threshold: f32,
+    entropy_ratio: f32, // proportion of of max entropy
 ) -> Result<(String, Vec<usize>), SearchError> {
     // alphabet size minus the blank label
     let alphabet_size = alphabet.len() - 1;
@@ -270,7 +270,7 @@ pub fn beam_search<D: Data<Elem = f32>>(
             // now find KL and if its too big only look at underrepresented bases :D
             if discard_by_kl > 0.0 {
                 let kl = kl_divergence(&counts);
-                if kl > discard_by_kl && entropy > 0.8*(4.0_f32).ln() {
+                if kl > discard_by_kl && entropy > entropy_ratio*(4.0_f32).ln() {
                     for (i, &count) in counts.iter().enumerate() {
                         let freq = count as f64 / length as f64;
                         if freq < 0.25 {
@@ -875,10 +875,10 @@ mod tests {
         assert_eq!(seq, "GGGGGAG%&##$$(");
         assert_eq!(starts, vec![2, 3, 4, 7, 8, 9, 11]);
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1.0,-1,0,1.0,false,-1.0,0.0,-1.0).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, true,-1.0,-1,0,1.0,false,-1.0,0.0,-1.0,0.8).unwrap();
         assert_eq!(seq, "GAGAG");
 
-        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1.0, -1,0,1.0,false,-1.0,0.0,-1.0).unwrap();
+        let (seq, _starts) = beam_search(&network_output, &alphabet, 5, 0.0, false,-1.0, -1,0,1.0,false,-1.0,0.0,-1.0,0.8).unwrap();
         assert_eq!(seq, "GGGAGAG");
     }
 
